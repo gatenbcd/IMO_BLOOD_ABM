@@ -1,0 +1,333 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Wed Nov 20 16:20:42 2013
+
+@author: chandlergatenbee
+"""
+
+import numpy as np
+
+
+
+a_min = 0.002;
+a_max = 1.0;
+d = 1.05;
+r = 1.1;
+tau_c = 48.0;
+c_1 = 8.0;
+
+
+N_tilda_A = np.power(10.0, 5.0) 
+N_tilda_Omega = np.power(10.0, 5.0) ;
+
+#%more intuitive functional form variables
+f_zero_A = 0.5;
+f_half_A = 0.45;
+f_full_A = 0.05;
+f_inf_A = 0.0;
+
+f_zero_Omega = 0.5;
+f_half_Omega = 0.3;
+f_full_Omega = 0.1;
+f_inf_Omega = 0.0;
+
+
+#%convert intuitive types to nu
+h_one_A = 1.0/(f_zero_A - f_half_A);
+h_two_A = 1.0/(f_half_A - f_inf_A);
+h_three_A = 1.0/(f_full_A - f_inf_A);
+
+h_one_Omega = 1.0/(f_zero_Omega - f_half_Omega);
+h_two_Omega = 1.0/(f_half_Omega - f_inf_Omega);
+h_three_Omega = 1.0/(f_full_Omega - f_inf_Omega);
+
+nu_1_A = (h_one_A*h_three_A - np.power(h_two_A,2.0))/(h_one_A + h_three_A - h_two_A);
+nu_2_A = h_one_A - nu_1_A;
+nu_3_A = np.log10((h_three_A - nu_1_A)/nu_2_A); ###TODO So, is this supposed to be log 10?   %remember that matlab uses natural log 
+nu_4_A = f_inf_A;
+
+nu_1_Omega = (h_one_Omega*h_three_Omega - np.power(h_two_Omega, 2.0) )/(h_one_Omega + h_three_Omega - h_two_Omega);
+nu_2_Omega = h_one_Omega - nu_1_Omega;
+nu_3_Omega = np.log10((h_three_Omega - nu_1_Omega)/nu_2_Omega); #%remember that matlab uses natural log
+nu_4_Omega = f_inf_Omega;
+
+
+class CellPop():
+    def __init__(self, n_stemness_bins, n_cell_clock_bins):
+        ''' Awesomeness = Stemness ; Decease with each time step
+            Cockiness = Cell Clock ; Increase with each time step
+        '''
+        self.n_stemness_bins = n_stemness_bins
+        self.n_cell_clock_bins = n_cell_clock_bins
+        self.active_cell_matrix = np.zeros((n_stemness_bins, n_cell_clock_bins))
+        self.quiescent_cells = np.zeros(n_stemness_bins) #List of cells in quiescent state
+        self.cells_added_to_blood = 0 
+        self.cells_in_blood = [] #List of the number of cells added to blood each step
+        
+        
+        self.blood_cell_decay_rate = 0 #0.1
+        self.blood_cell_growth_rate = 0 #2.0
+
+        self.tau_c = 0 #2#np.round(self.n_cell_clock_bins / 2.0) # Cells with a cell clock lower than this cannot divide
+        self.max_stemness = 1
+        self.min_stemness =  0.002
+
+
+        self.stemness_values = np.linspace(self.min_stemness, self.max_stemness, n_stemness_bins) #List of stemness values
+        self.stemness_values = sorted(self.stemness_values, reverse = True) # Pops higher in matrix have higher stemness
+
+
+        #Add values for min/max stemness,theta c, etc...
+        
+        #Just to make referencing the matrix easier
+        self.stemness_row_max =  self.n_stemness_bins - 1
+        self.cell_clock_col_max  = self.n_cell_clock_bins - 1 
+        
+
+
+
+    def number_of_cells_for_action(self, p1, p2, p3, p4, p5, stemness, n_cells):
+        ''' Determines how many cells will carry out activity
+        '''
+        alpha = p5 + 1.0/(p2 + p3*np.exp(p4*stemness/p1))
+        successful_cells = np.random.binomial(n=n_cells, p = alpha)
+        
+        return  successful_cells
+            
+        
+
+    
+    def determine_activity_state(self):
+        ''' Step through matrix, moving up through cell clock, whiledecreasing stemness. Plus:
+            1) Cells that loose stemness enter the bloodstream
+            2) Some stem cells are unable to divide and enter quiescence state
+            3) Other stem cells divide, and they and daughter cells reset clock and assigned new stemness 
+        '''
+        new_matrix = np.zeros((self.n_stemness_bins, self.n_cell_clock_bins))
+        cells_to_add_to_blood = 0
+        
+        for stemness in np.arange(0, self.n_stemness_bins):
+            
+            for cell_clock in np.arange(0, self.n_cell_clock_bins):
+                
+                # Get population size at this point in the matrix
+                pop_size = self.active_cell_matrix[ stemness , cell_clock]
+
+                ### All stem cells that have minimum stemness differentiate and enter the bloodstream
+                if stemness == self.stemness_row_max:
+                    cells_to_add_to_blood += pop_size
+                    
+                
+                ### All stem cells with more than minimal stemness and a cell clock < tau C 
+                # increase cell clock and decrease stemness by 1 step
+                if stemness < self.stemness_row_max and \
+                cell_clock < self.tau_c  :
+                    new_matrix[stemness  + 1, cell_clock + 1] =   pop_size
+                
+                ### Stem cells with cell clock > theta c and cell clock < cell clock max have chance to divide
+                # Or increase their clock by 1              
+                if stemness < self.stemness_row_max and \
+                cell_clock < self.cell_clock_col_max and \
+                cell_clock >= self.tau_c :
+                    stemness_level = self.stemness_values[stemness]
+                    successfully_divided = self.number_of_cells_for_action(N_tilda_A, nu_1_A, \
+                    nu_2_A, nu_3_A, nu_4_A, stemness_level, total_number_of_active_cells)          
+                    
+                    ###TODO !!! This value is sometiems negative !!! ### 
+                    unsuccessful = pop_size - successfully_divided
+                    
+                    #Add successfully divided cells to beginning of matrix
+                        #Use Multinomial distribution to assign a subset of each poplation a stemness value
+                    cells_to_add = np.random.multinomial(n=successfully_divided, pvals = [1.0/self.n_stemness_bins]*int(self.n_stemness_bins))
+                    new_matrix[:,0] += cells_to_add 
+
+                    #For unsuccessful cells: drop 1 stemness level and increase cell clock
+                    new_matrix[stemness  + 1, cell_clock + 1] = unsuccessful
+ 
+
+                ### Stem cells that have reached max clock value have opportunity to divide or enter quiescence
+                if stemness < self.stemness_row_max and \
+                cell_clock == self.cell_clock_col_max :
+                    stemness_level = self.stemness_values[stemness]
+                   
+                    successfully_divided = self.number_of_cells_for_action(N_tilda_A, nu_1_A, \
+                    nu_2_A, nu_3_A, nu_4_A, stemness_level, total_number_of_active_cells)          
+
+                    ###TODO !!! This value is sometiems negative !!! ### 
+                    unsuccessful = pop_size - successfully_divided
+#                    print unsuccessful
+
+                    #Add successfully divided cells to beginning of matrix
+                        #Use Multinomial distribution to assign a subset of each poplation a stemness value
+                    cells_to_add = np.random.multinomial(n=successfully_divided, pvals = [1.0/self.n_stemness_bins]*int(self.n_stemness_bins))
+                    new_matrix[:,0] += cells_to_add 
+
+                    #For unsuccessful cells: drop 1 stemness level and increase cell clock
+#                    print self.quiescent_cells
+                    self.quiescent_cells[stemness] += unsuccessful
+        
+       
+       # Update Active Cell Matrix
+        self.active_cell_matrix = new_matrix
+
+        
+        # Track how many cells entered the bloodstream
+
+        self.cells_added_to_blood = cells_to_add_to_blood
+#        print self.cells_in_blood                
+
+ 
+    def determine_quiescent_cell_fate(self):
+        ''' Quiescent cells can either reactivate and try to divide, or remain quiescent.
+            If cell remains quiescent, it gains some stemness
+        '''
+        for pop in np.arange(0,self.n_stemness_bins):
+            stemness_level = self.stemness_values[pop]
+            
+            successfully_activated = self.number_of_cells_for_action( N_tilda_Omega,nu_1_Omega, \
+            nu_2_Omega, nu_3_Omega, nu_4_Omega, stemness_level, total_number_of_quiescent_cells )
+
+            unsuccessful = pop - successfully_activated
+            
+            # Successful cells return to active cell matrix at column tau C
+            self.active_cell_matrix[pop, self.tau_c] += successfully_activated
+            
+            #Unsucessful Cells increase stemness, unless already at max
+
+            if pop > 0:
+                self.quiescent_cells[pop - 1] +=  unsuccessful
+            
+   
+    def determine_number_of_cells_in_blood(self, rep_number):
+        ''' Tracks the number of blood cells at each time step.
+        Each step addes new cells, while some old cells die and others replicate
+        '''
+       
+        if rep_number == 0:
+            self.cells_in_blood.append(self.cells_added_to_blood)
+       
+        else:
+            blood_cells_lost = self.blood_cell_decay_rate * self.cells_in_blood[rep_number - 1]
+            blood_cells_from_replictaion = self.blood_cell_growth_rate * self.cells_in_blood[rep_number - 1]
+            total_number_of_blood_cells = blood_cells_from_replictaion - blood_cells_lost + self.cells_added_to_blood        
+            self.cells_in_blood.append(total_number_of_blood_cells)
+            
+        
+        
+        
+    
+    def actions(self):
+        self.determine_activity_state()
+        self.determine_quiescent_cell_fate()
+        
+        
+            
+            
+            
+            
+
+
+
+    
+        
+normal_blood_cell_decay_rate = 0.1
+
+normal_blood_cell_growth_rate = 2.0
+tumor_blood_cell_growth_rate = 3.0
+
+normal_tau_c = 3
+b_catenin_tau_c = 2
+
+normal_n_cell_clock_bins = 5
+b_catenin_cell_clock_bins = 3
+
+normal_stemness_bins = 5
+
+
+rep_target = 2
+
+###Initialize Populations
+normal_cells = CellPop(n_stemness_bins= normal_stemness_bins , n_cell_clock_bins= normal_n_cell_clock_bins)
+normal_cells.blood_cell_decay_rate = normal_blood_cell_decay_rate 
+normal_cells.blood_cell_growth_rate = normal_blood_cell_growth_rate 
+normal_cells.tau_c = normal_tau_c
+normal_cells.active_cell_matrix = np.random.randint(0,100.0, (normal_stemness_bins, normal_n_cell_clock_bins)) * 1.0
+normal_cells.quiescent_cells = np.random.randint(0,100,normal_stemness_bins) * 1.0
+#normal_cells.active_cell_matrix = np.random.rand(normal_stemness_bins, normal_n_cell_clock_bins) * 100.0
+#normal_cells.quiescent_cells = np.random.rand(normal_stemness_bins) * 100.0
+
+#Cells behave similalry to normal cells, but progeny in the blood have a faster growth rate
+brc_abl_cells = CellPop(n_stemness_bins= normal_stemness_bins , n_cell_clock_bins= normal_n_cell_clock_bins)
+brc_abl_cells.blood_cell_decay_rate = normal_blood_cell_decay_rate 
+brc_abl_cells.blood_cell_growth_rate = tumor_blood_cell_growth_rate
+brc_abl_cells.tau_c = normal_tau_c
+brc_abl_cells.active_cell_matrix = np.random.randint(0,100,(normal_stemness_bins, normal_n_cell_clock_bins)) * 1.0
+brc_abl_cells.quiescent_cells = np.random.randint(0,100, normal_stemness_bins) * 1.0
+#brc_abl_cells.active_cell_matrix = np.random.rand(normal_stemness_bins, normal_n_cell_clock_bins) * 100.0
+#brc_abl_cells.quiescent_cells = np.random.rand(normal_stemness_bins) * 100.0
+
+# BRC-ABL Cells + B-catenin replicate within the bone marrow at a faster rate:
+    #Smaller cell clock and scaled down tau C
+b_catenin_cells = CellPop(n_stemness_bins= normal_stemness_bins , n_cell_clock_bins= b_catenin_cell_clock_bins )
+b_catenin_cells.blood_cell_decay_rate = normal_blood_cell_decay_rate 
+b_catenin_cells.blood_cell_growth_rate = tumor_blood_cell_growth_rate
+b_catenin_cells.tau_c = b_catenin_tau_c
+b_catenin_cells.active_cell_matrix = np.random.randint(0,100,(normal_stemness_bins, b_catenin_cell_clock_bins)) * 1.0
+b_catenin_cells.quiescent_cells = np.random.randint(0,100, normal_stemness_bins) * 1.0
+#b_catenin_cells.active_cell_matrix = np.random.rand(normal_stemness_bins, b_catenin_cell_clock_bins) * 100.0
+#b_catenin_cells.quiescent_cells = np.random.rand(normal_stemness_bins) * 100.0
+
+
+    #Initialize total number of active and quiescent cells
+n_active_normal_cells = np.sum(normal_cells.active_cell_matrix)
+n_active_brc_abl_cells = np.sum(brc_abl_cells.active_cell_matrix)
+n_active_b_catenin_cells = np.sum(b_catenin_cells.active_cell_matrix)
+    
+total_number_of_active_cells = n_active_normal_cells + n_active_brc_abl_cells + n_active_b_catenin_cells
+
+    #Initialize total number of quiescent and quiescent cells
+n_quiescent_normal_cells = np.sum(normal_cells.quiescent_cells)
+n_quiescent_brc_abl_cells = np.sum(brc_abl_cells.quiescent_cells)
+n_quiescent_b_catenin_cells = np.sum(b_catenin_cells.quiescent_cells)
+    
+total_number_of_quiescent_cells = n_quiescent_normal_cells + n_quiescent_brc_abl_cells + n_quiescent_b_catenin_cells
+
+
+
+
+rep = 0
+while rep != rep_target:
+
+    #Cell Populations carry out actions
+    normal_cells.actions()
+    brc_abl_cells.actions()
+    b_catenin_cells.actions()
+    
+    print normal_cells.active_cell_matrix
+    print brc_abl_cells.active_cell_matrix
+    print b_catenin_cells.active_cell_matrix
+
+            
+    #Track the number of cells in the blood
+    normal_cells.determine_number_of_cells_in_blood(rep)
+    brc_abl_cells.determine_number_of_cells_in_blood(rep)
+    b_catenin_cells.determine_number_of_cells_in_blood(rep)
+    
+    #Track total number of active and quiescent cells
+    n_active_normal_cells = np.sum(normal_cells.active_cell_matrix)
+    n_active_brc_abl_cells = np.sum(brc_abl_cells.active_cell_matrix)
+    n_active_b_catenin_cells = np.sum(b_catenin_cells.active_cell_matrix)
+    
+    total_number_of_active_cells = n_active_normal_cells + n_active_brc_abl_cells + n_active_b_catenin_cells
+    
+    #Track total number of quiescent and quiescent cells
+    n_quiescent_normal_cells = np.sum(normal_cells.quiescent_cells)
+    n_quiescent_brc_abl_cells = np.sum(brc_abl_cells.quiescent_cells)
+    n_quiescent_b_catenin_cells = np.sum(b_catenin_cells.quiescent_cells)
+    
+    total_number_of_quiescent_cells = n_quiescent_normal_cells + n_quiescent_brc_abl_cells + n_quiescent_b_catenin_cells
+
+    
+    rep += 1
+
+
